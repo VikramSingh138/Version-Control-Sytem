@@ -2,8 +2,9 @@
 #include <fstream>
 #include <string>
 #include <unordered_map>
-#include <ctime>
 #include <map>
+#include <ctime>
+#include <cstdlib>
 
 using namespace std;
 
@@ -50,15 +51,8 @@ public:
     static void logAction(const string& action) {
         ofstream logFile("logs.txt", ios::app);
         auto t = time(nullptr);
-        logFile << "[" << ctime(&t) << "] " << action << "\n";
+        logFile << "- " << ctime(&t) << "  " << action << "\n";
         logFile.close();
-    }
-
-    static void logVersion(const string& filename, int version, const string& user) {
-        ofstream versionLog("version_history.txt", ios::app);
-        auto t = time(nullptr);
-        versionLog << "File: " << filename << ", Version: " << version << ", User: " << user << ", Time: " << ctime(&t);
-        versionLog.close();
     }
 };
 
@@ -89,27 +83,14 @@ private:
         return file.good();
     }
 
-    void deleteFile(const string& filename) {
-        if (remove(filename.c_str()) == 0) {
-            cout << "File deleted successfully.\n";
-        } else {
-            cout << "Error: Unable to delete the file.\n";
-        }
-    }
-
-    bool hasPermission(const string& filename) {
-        auto fileOwners = loadFileOwners();
-        if (fileOwners.find(filename) != fileOwners.end() && fileOwners[filename] == currentUserID) {
-            return true; // Current user is the owner
-        }
-        return false;
-    }
-
-    void requestPermission(const string& filename, const string& owner) {
-        ofstream requestFile("permission_requests.txt", ios::app);
-        requestFile << currentUserID << " requests access to " << filename << " from " << owner << "\n";
-        requestFile.close();
-        cout << "Permission request sent to " << owner << ".\n";
+    void openFileForEditing(const string& filename) {
+        string command;
+#ifdef _WIN32
+        command = "notepad " + filename; // Windows
+#else
+        command = "nano " + filename; // Linux/Unix
+#endif
+        system(command.c_str());
     }
 
     int getNextVersion(const string& filename) {
@@ -125,23 +106,76 @@ private:
         return version + 1;
     }
 
-    void saveVersion(const string& filename, int version) {
+    void saveVersion(const string& filename, const string& copyFilename) {
+        int version = getNextVersion(filename);
         string versionFile = filename + "_v" + to_string(version) + ".txt";
-        ifstream srcFile(filename, ios::binary);
+
+        ifstream srcFile(copyFilename, ios::binary);
         ofstream destFile(versionFile, ios::binary);
 
         if (!srcFile.is_open() || !destFile.is_open()) {
-            cout << "Error: Unable to create version file.\n";
+            cout << "Error: Unable to save version.\n";
             return;
         }
 
-        destFile << srcFile.rdbuf(); // Copy file content
+        destFile << srcFile.rdbuf(); // Copy content
         srcFile.close();
         destFile.close();
 
         ofstream versionTracker(filename + "_versions.txt");
         versionTracker << version;
         versionTracker.close();
+
+        Logger::logAction("Saved version " + to_string(version) + " for file: " + filename);
+        cout << "Changes saved as version " << version << ".\n";
+    }
+
+    void saveMain(const string& filename, const string& copyFilename){
+        ifstream srcFile(copyFilename, ios::binary);
+        ofstream destFile(filename, ios::binary);
+
+        if (!srcFile.is_open() || !destFile.is_open()) {
+            cout << "Error: Unable to save version.\n";
+            return;
+        }
+
+        destFile << srcFile.rdbuf(); // Copy content
+        srcFile.close();
+        destFile.close();
+
+        Logger::logAction("Merged changes for file: " + filename);
+        cout << "Changes saved" << ".\n";
+    }
+
+    void proposeMerge(const string& filename, const string& rootUser) {
+        ofstream mergeRequests("merge_requests.txt", ios::app);
+        mergeRequests << currentUserID << " proposes merge for " << filename << " to " << rootUser << "\n";
+        mergeRequests.close();
+        cout << "Merge proposal sent to " << rootUser << ".\n";
+    }
+
+    void rollbackToVersion(const string& filename, int version) {
+        string versionFile = filename + "_v" + to_string(version) + ".txt";
+
+        if (!fileExists(versionFile)) {
+            cout << "Specified version does not exist.\n";
+            return;
+        }
+
+        ifstream srcFile(versionFile, ios::binary);
+        ofstream destFile(filename, ios::binary);
+
+        if (!srcFile.is_open() || !destFile.is_open()) {
+            cout << "Error: Unable to rollback to version.\n";
+            return;
+        }
+
+        destFile << srcFile.rdbuf(); // Copy content
+        srcFile.close();
+        destFile.close();
+
+        Logger::logAction("Rolled back " + filename + " to version " + to_string(version));
+        cout << "File " << filename << " rolled back to version " << version << " successfully.\n";
     }
 
 public:
@@ -159,70 +193,65 @@ public:
         cout << "File " << filename << " created successfully and is owned by " << currentUserID << ".\n";
     }
 
-    void deleteFileAction(const string& filename) {
-        auto fileOwners = loadFileOwners();
-        if (fileOwners.find(filename) != fileOwners.end() && fileOwners[filename] == currentUserID) {
-            deleteFile(filename);
-            Logger::logAction(currentUserID + " deleted file: " + filename);
-            cout << "File " << filename << " deleted successfully.\n";
-        } else {
-            cout << "You do not have permission to delete this file.\n";
+    void modifyFile(const string& filename) {
+        string copyFilename = filename + "_copy.txt";
+
+        if (!fileExists(filename)) {
+            cout << "File does not exist.\n";
+            return;
+        }
+
+        ifstream srcFile(filename);
+        ofstream copyFile(copyFilename);
+
+        if (!srcFile.is_open() || !copyFile.is_open()) {
+            cout << "Error: Unable to create a copy of the file.\n";
+            return;
+        }
+
+        copyFile << srcFile.rdbuf(); // Copy content
+        srcFile.close();
+        copyFile.close();
+
+        Logger::logAction(currentUserID + " created a copy for modification: " + copyFilename);
+
+        cout << "Opened a copy of the file for modification: " << copyFilename << "\n";
+        openFileForEditing(copyFilename);
+
+        cout << "Do you want to propose merging changes to the main file? (yes/no): ";
+        string response;
+        cin >> response;
+
+        if (response == "yes") {
+            auto fileOwners = loadFileOwners();
             if (fileOwners.find(filename) != fileOwners.end()) {
-                requestPermission(filename, fileOwners[filename]);
+                proposeMerge(filename, fileOwners[filename]);
+            } else {
+                cout << "Owner not found for this file.\n";
             }
+        } else {
+            saveVersion(filename, copyFilename);
         }
     }
 
-    void modifyFile(const string& filename) {
+    void mergeFile(const string& filename) {
         auto fileOwners = loadFileOwners();
-        if (fileOwners.find(filename) != fileOwners.end()) {
-            if (fileOwners[filename] == currentUserID) {
-                int version = getNextVersion(filename);
-                saveVersion(filename, version);
-                Logger::logVersion(filename, version, currentUserID);
+        const string& copyFilename = filename + "_copy.txt";
 
-                string line;
-                ofstream file(filename, ios::app);
-                cout << "Enter content to append (type 'END' to stop): \n";
-                cin.ignore();
-                while (getline(cin, line) && line != "END") {
-                    file << line << "\n";
-                }
-                file.close();
-                Logger::logAction(currentUserID + " modified file: " + filename);
-                cout << "File " << filename << " modified successfully.\n";
-            } else {
-                cout << "You do not have permission to modify this file.\n";
-                requestPermission(filename, fileOwners[filename]);
-            }
+        if (fileOwners.find(filename) != fileOwners.end() && fileOwners[filename] == currentUserID) {
+            saveVersion(filename, copyFilename);
+            saveMain(filename, copyFilename);
+            cout << "Merged changes from " << copyFilename << " into " << filename << ".\n";
         } else {
-            cout << "File does not exist.\n";
+            cout << "You do not have permission to merge changes into this file.\n";
         }
     }
 
     void rollbackFile(const string& filename, int version) {
-        string versionFile = filename + "_v" + to_string(version) + ".txt";
         auto fileOwners = loadFileOwners();
 
         if (fileOwners.find(filename) != fileOwners.end() && fileOwners[filename] == currentUserID) {
-            if (fileExists(versionFile)) {
-                ifstream srcFile(versionFile, ios::binary);
-                ofstream destFile(filename, ios::binary);
-
-                if (!srcFile.is_open() || !destFile.is_open()) {
-                    cout << "Error: Unable to rollback file.\n";
-                    return;
-                }
-
-                destFile << srcFile.rdbuf(); // Copy file content
-                srcFile.close();
-                destFile.close();
-
-                Logger::logAction(currentUserID + " rolled back file: " + filename + " to version: " + to_string(version));
-                cout << "File " << filename << " rolled back to version " << version << " successfully.\n";
-            } else {
-                cout << "Specified version does not exist.\n";
-            }
+            rollbackToVersion(filename, version);
         } else {
             cout << "You do not have permission to rollback this file.\n";
         }
@@ -234,7 +263,7 @@ void menu(const string& userID) {
     int choice;
 
     do {
-        cout << "\n1. Create File\n2. Delete File\n3. Modify File\n4. Rollback File\n5. Logout\nEnter choice: ";
+        cout << "\n1. Create File\n2. Modify File\n3. Merge File\n4. Rollback File\n5. Logout\nEnter choice: ";
         cin >> choice;
 
         if (choice == 1) {
@@ -244,14 +273,14 @@ void menu(const string& userID) {
             fs.createFile(filename);
         } else if (choice == 2) {
             string filename;
-            cout << "Enter filename to delete: ";
-            cin >> filename;
-            fs.deleteFileAction(filename);
-        } else if (choice == 3) {
-            string filename;
             cout << "Enter filename to modify: ";
             cin >> filename;
             fs.modifyFile(filename);
+        } else if (choice == 3) {
+            string filename, copyFilename;
+            cout << "Enter main filename: ";
+            cin >> filename;
+            fs.mergeFile(filename);
         } else if (choice == 4) {
             string filename;
             int version;
