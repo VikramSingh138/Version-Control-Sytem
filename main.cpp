@@ -42,7 +42,6 @@ public:
         return false;
     }
 
-
     static void registerUser(const string& id, const string& pass, const string& role) {
         ofstream file("users.txt", ios::app);
         file << id << " " << hashPassword(pass) << " " << role << "\n";
@@ -73,7 +72,6 @@ public:
 
     bool hasElevatedPrivileges() const override { return true; }
 
-    // Friend function for privileged file actions
     friend class FileSystem;
 };
 
@@ -94,37 +92,9 @@ private:
     string currentUserID;
     bool isAdmin;
 
-    map<string, string> loadFileOwners() {
-        map<string, string> fileOwners;
-        ifstream ownerFile("file_owners.txt");
-        string filename, owner;
-
-        while (ownerFile >> filename >> owner) {
-            fileOwners[filename] = owner;
-        }
-        ownerFile.close();
-        return fileOwners;
-    }
-
-    void saveFileOwner(const string& filename, const string& owner) {
-        ofstream ownerFile("file_owners.txt", ios::app);
-        ownerFile << filename << " " << owner << "\n";
-        ownerFile.close();
-    }
-
     bool fileExists(const string& filename) {
         ifstream file(filename);
         return file.good();
-    }
-
-    void openFileForEditing(const string& filename) {
-        string command;
-#ifdef _WIN32
-        command = "notepad " + filename; // Windows
-#else
-        command = "nano " + filename; // Linux/Unix
-#endif
-        system(command.c_str());
     }
 
     int getNextVersion(const string& filename) {
@@ -152,7 +122,7 @@ private:
             return;
         }
 
-        destFile << srcFile.rdbuf(); // Copy content
+        destFile << srcFile.rdbuf(); // Copy content from source file to destination file
         srcFile.close();
         destFile.close();
 
@@ -162,13 +132,6 @@ private:
 
         Logger::logAction("Saved version " + to_string(version) + " for file: " + filename);
         cout << "Changes saved as version " << version << ".\n";
-    }
-
-    void proposeMerge(const string& filename, const string& rootUser) {
-        ofstream mergeRequests("merge_requests.txt", ios::app);
-        mergeRequests << currentUserID << " proposes merge for " << filename << " to " << rootUser << "\n";
-        mergeRequests.close();
-        cout << "Merge proposal sent to " << rootUser << ".\n";
     }
 
     void rollbackToVersion(const string& filename, int version) {
@@ -187,12 +150,43 @@ private:
             return;
         }
 
-        destFile << srcFile.rdbuf(); // Copy content
+        destFile << srcFile.rdbuf(); // Replace content with the specified version
         srcFile.close();
         destFile.close();
 
         Logger::logAction("Rolled back " + filename + " to version " + to_string(version));
         cout << "File " << filename << " rolled back to version " << version << " successfully.\n";
+    }
+
+    void detectMergeConflicts(const string& baseFile, const string& modifiedFile) {
+        ifstream base(baseFile);
+        ifstream modified(modifiedFile);
+
+        if (!base.is_open() || !modified.is_open()) {
+            cout << "Error: Unable to open files for conflict detection.\n";
+            return;
+        }
+
+        string baseLine, modifiedLine;
+        bool conflict = false;
+
+        cout << "\n-- Conflict Detection --\n";
+        while (getline(base, baseLine) && getline(modified, modifiedLine)) {
+            if (baseLine != modifiedLine) {
+                conflict = true;
+                cout << "Conflict detected:\n";
+                cout << "Base: " << baseLine << "\nModified: " << modifiedLine << "\n";
+            }
+        }
+
+        if (conflict) {
+            cout << "Merge conflicts found. Review the lines above before merging.\n";
+        } else {
+            cout << "No merge conflicts detected.\n";
+        }
+
+        base.close();
+        modified.close();
     }
 
 public:
@@ -205,9 +199,8 @@ public:
         }
         ofstream file(filename);
         file.close();
-        saveFileOwner(filename, currentUserID);
         Logger::logAction(currentUserID + " created file: " + filename);
-        cout << "File " << filename << " created successfully and is owned by " << currentUserID << ".\n";
+        cout << "File " << filename << " created successfully.\n";
     }
 
     void modifyFile(const string& filename) {
@@ -233,15 +226,14 @@ public:
         Logger::logAction(currentUserID + " created a copy for modification: " + copyFilename);
 
         cout << "Opened a copy of the file for modification: " << copyFilename << "\n";
-        openFileForEditing(copyFilename);
+        system(("notepad " + copyFilename).c_str()); // Edit the file using notepad or another text editor like 'nano' for Linux
 
         saveVersion(filename, copyFilename); // Save changes as a new version
     }
 
-
-    void rollbackFile(AdminUser* admin, const string& filename, int version) {
+    void rollbackFile(const string& filename, int version) {
         if (!isAdmin) {
-            cout << "Only admins can rollback directly.\n";
+            cout << "Only admins can perform rollbacks.\n";
             return;
         }
 
@@ -250,7 +242,7 @@ public:
 
     void mergeFile(const string& filename, const string& copyFilename) {
         if (!isAdmin) {
-            cout << "Error: Only admins can merge changes into the main file.\n";
+            cout << "Only admins can merge changes into the main file.\n";
             return;
         }
 
@@ -259,22 +251,31 @@ public:
             return;
         }
 
-        ifstream srcFile(copyFilename, ios::binary);
-        ofstream destFile(filename, ios::binary);
+        detectMergeConflicts(filename, copyFilename);
 
-        if (!srcFile.is_open() || !destFile.is_open()) {
-            cout << "Error: Unable to merge file.\n";
-            return;
+        cout << "Proceed with merge? (yes/no): ";
+        string response;
+        cin >> response;
+
+        if (response == "yes") {
+            ifstream srcFile(copyFilename, ios::binary);
+            ofstream destFile(filename, ios::binary);
+
+            if (!srcFile.is_open() || !destFile.is_open()) {
+                cout << "Error: Unable to merge file.\n";
+                return;
+            }
+
+            destFile << srcFile.rdbuf(); // Replace content of main file with copy
+            srcFile.close();
+            destFile.close();
+
+            Logger::logAction(currentUserID + " merged changes from " + copyFilename + " into " + filename);
+            cout << "Changes from " << copyFilename << " merged into " << filename << " successfully.\n";
+        } else {
+            cout << "Merge operation canceled.\n";
         }
-
-        destFile << srcFile.rdbuf(); // Replace content of main file with copy
-        srcFile.close();
-        destFile.close();
-
-        Logger::logAction(currentUserID + " merged changes from " + copyFilename + " into " + filename);
-        cout << "Changes from " << copyFilename << " merged into " << filename << " successfully.\n";
     }
-
 };
 
 void menu(User* user) {
@@ -282,7 +283,7 @@ void menu(User* user) {
     int choice;
 
     do {
-        cout << "\n1. Create File\n2. Modify File\n3. Merge Changes\n4. Logout\nEnter choice: ";
+        cout << "\n1. Create File\n2. Modify File\n3. Rollback File (Admin Only)\n4. Merge File (Admin Only)\n5. Logout\nEnter choice: ";
         cin >> choice;
 
         if (choice == 1) {
@@ -296,21 +297,28 @@ void menu(User* user) {
             cin >> filename;
             fs.modifyFile(filename);
         } else if (choice == 3 && user->hasElevatedPrivileges()) {
+            string filename;
+            int version;
+            cout << "Enter filename: ";
+            cin >> filename;
+            cout << "Enter version to rollback to: ";
+            cin >> version;
+            fs.rollbackFile(filename, version);
+        } else if (choice == 4 && user->hasElevatedPrivileges()) {
             string filename, copyFilename;
             cout << "Enter main filename: ";
             cin >> filename;
             cout << "Enter copy filename to merge: ";
             cin >> copyFilename;
             fs.mergeFile(filename, copyFilename);
-        } else if (choice == 4) {
+        } else if (choice == 5) {
             Logger::logAction(user->getUserID() + " logged out");
             cout << "Logged out successfully.\n";
         } else {
             cout << "Invalid choice or insufficient privileges. Try again.\n";
         }
-    } while (choice != 4);
+    } while (choice != 5);
 }
-
 
 int main() {
     string id, pass;
@@ -333,8 +341,7 @@ int main() {
         cin >> pass;
         User::registerUser(id, pass, "admin");
         cout << "Admin User registered successfully.\n";
-        } 
-    else if (option == 3) {
+    } else if (option == 3) {
         cout << "Enter UserID: ";
         cin >> id;
         cout << "Enter Password: ";
@@ -344,7 +351,6 @@ int main() {
         if (User::authenticate(id, pass, role)) {
             cout << "Login successful.\n";
 
-            // Create appropriate user object.
             User* user = nullptr;
             if (role == "admin") {
                 user = new AdminUser(id, pass);
@@ -354,13 +360,11 @@ int main() {
 
             user->displayRole();
             menu(user);
-            delete user; // Clean up memory.
+            delete user; // Clean up memory
         } else {
             cout << "Authentication failed. Try again.\n";
         }
     }
-
-
 
     return 0;
 }
